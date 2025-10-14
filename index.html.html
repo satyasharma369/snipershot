@@ -26,148 +26,150 @@
   <div id="alertsLog"></div>
 
   <script>
-    const TELEGRAM_BOT_TOKEN = '7906439774:AAGGLZGxuhZeKkaqDcr2CS0-9larhSEz8VA';   
-    const TELEGRAM_CHAT_ID = '8079184557';         
+    window.onload = function() {
+      const TELEGRAM_BOT_TOKEN = '7906439774:AAGGLZGxuhZeKkaqDcr2CS0-9larhSEz8VA';   
+      const TELEGRAM_CHAT_ID = '8079184557';         
 
-    let currentMarket = 'spot';
-    const alertsLog = document.getElementById('alertsLog');
-    const marketSelect = document.getElementById('marketSelect');
-    let widget = null;
+      let currentMarket = 'spot';
+      const alertsLog = document.getElementById('alertsLog');
+      const marketSelect = document.getElementById('marketSelect');
+      let widget = null;
 
-    function createChart(symbol) {
-      if(widget) widget.remove();
-      widget = new TradingView.widget({
-        container_id: 'chart',
-        width: window.innerWidth * 0.9,
-        height: 600,
-        symbol: symbol,
-        interval: '15',
-        timezone: 'Asia/Kolkata',
-        theme: 'dark',
-        style: '1',
-        toolbar_bg: '#1e1e1e',
-        enable_publishing: false,
-        allow_symbol_change: true,
-        details: true,
-        studies: ['MACD', 'RSI@tv-basicstudies'],
-        hide_side_toolbar: false,
-        withdateranges: true,
-        watchlist: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],
-        locale: 'en',
-      });
-    }
+      function createChart(symbol) {
+        if(widget) widget.remove();
+        widget = new TradingView.widget({
+          container_id: 'chart',
+          width: window.innerWidth * 0.9,
+          height: 600,
+          symbol: symbol,
+          interval: '15',
+          timezone: 'Asia/Kolkata',
+          theme: 'dark',
+          style: '1',
+          toolbar_bg: '#1e1e1e',
+          enable_publishing: false,
+          allow_symbol_change: true,
+          details: true,
+          studies: ['MACD', 'RSI@tv-basicstudies'],
+          hide_side_toolbar: false,
+          withdateranges: true,
+          watchlist: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],
+          locale: 'en',
+        });
+      }
 
-    function logAlert(message) {
-      const time = new Date().toLocaleTimeString();
-      alertsLog.innerHTML += `<div>[${time}] ${message}</div>`;
-      alertsLog.scrollTop = alertsLog.scrollHeight;
-    }
+      function logAlert(message) {
+        const time = new Date().toLocaleTimeString();
+        alertsLog.innerHTML += `<div>[${time}] ${message}</div>`;
+        alertsLog.scrollTop = alertsLog.scrollHeight;
+      }
 
-    function sendTelegramAlert(message) {
-      const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(message)}`;
-      fetch(url)
-        .then(response => response.json())
-        .then(data => {
-          if(!data.ok) {
-            console.error('Telegram alert failed:', data);
+      function sendTelegramAlert(message) {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(message)}`;
+        fetch(url)
+          .then(response => response.json())
+          .then(data => {
+            if(!data.ok) {
+              console.error('Telegram alert failed:', data);
+            }
+          })
+          .catch(err => console.error('Telegram fetch error:', err));
+      }
+
+      async function fetchKlines(market) {
+        try {
+          let url = '';
+          if(market === 'spot') {
+            url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=100';
+          } else {
+            url = 'https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=15m&limit=100';
           }
-        })
-        .catch(err => console.error('Telegram fetch error:', err));
-    }
-
-    async function fetchKlines(market) {
-      try {
-        let url = '';
-        if(market === 'spot') {
-          url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=100';
-        } else {
-          url = 'https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=15m&limit=100';
+          const res = await fetch(url);
+          const data = await res.json();
+          return data;
+        } catch(err) {
+          console.error('Klines fetch error:', err);
+          return null;
         }
-        const res = await fetch(url);
-        const data = await res.json();
-        return data;
-      } catch(err) {
-        console.error('Klines fetch error:', err);
+      }
+
+      function calculateEMA(data, period) {
+        const k = 2 / (period + 1);
+        let emaArray = [];
+        data.forEach((price, index) => {
+          if(index === 0) {
+            emaArray.push(price);
+          } else {
+            const emaPrev = emaArray[index - 1];
+            const emaCurrent = (price * k) + (emaPrev * (1 - k));
+            emaArray.push(emaCurrent);
+          }
+        });
+        return emaArray;
+      }
+
+      function detectCross(shortEMA, longEMA) {
+        const len = shortEMA.length;
+        if(len < 2) return null;
+
+        const prevDiff = shortEMA[len - 2] - longEMA[len - 2];
+        const currDiff = shortEMA[len - 1] - longEMA[len - 1];
+
+        if(prevDiff <= 0 && currDiff > 0) return 'cross_up';
+        if(prevDiff >= 0 && currDiff < 0) return 'cross_down';
         return null;
       }
-    }
 
-    function calculateEMA(data, period) {
-      const k = 2 / (period + 1);
-      let emaArray = [];
-      data.forEach((price, index) => {
-        if(index === 0) {
-          emaArray.push(price);
+      let lastAlert = { '9_20': null };
+
+      async function checkEMACrossAlerts() {
+        const klines = await fetchKlines(currentMarket);
+        if(!klines) return;
+
+        const closePrices = klines.map(c => parseFloat(c[4]));
+
+        const ema9 = calculateEMA(closePrices, 9);
+        const ema20 = calculateEMA(closePrices, 20);
+        const ema200 = calculateEMA(closePrices, 200);
+
+        const cross9_20 = detectCross(ema9, ema20);
+
+        if(cross9_20 && lastAlert['9_20'] !== cross9_20) {
+          const marketAbove200 = ema9[ema9.length - 1] > ema200[ema200.length - 1] && ema20[ema20.length - 1] > ema200[ema200.length - 1];
+
+          let signalType = null;
+          if (marketAbove200 && cross9_20 === 'cross_up') {
+            signalType = 'BUY';
+          } else if (!marketAbove200 && cross9_20 === 'cross_down') {
+            signalType = 'SELL';
+          }
+
+          if(signalType) {
+            const msg = `${signalType} signal: EMA 9 and 20 ${cross9_20 === 'cross_up' ? 'crossed UP' : 'crossed DOWN'} on ${currentMarket} BTCUSDT (Market is ${marketAbove200 ? 'above' : 'below'} EMA 200)`;
+            logAlert(msg);
+            sendTelegramAlert(msg);
+            lastAlert['9_20'] = cross9_20;
+          } else {
+            lastAlert['9_20'] = null;
+          }
+        }
+      }
+
+      marketSelect.addEventListener('change', (e) => {
+        currentMarket = e.target.value;
+        if(currentMarket === 'spot') {
+          createChart('BINANCE:BTCUSDT');
         } else {
-          const emaPrev = emaArray[index - 1];
-          const emaCurrent = (price * k) + (emaPrev * (1 - k));
-          emaArray.push(emaCurrent);
+          createChart('BINANCE:BTCUSDT_PERP');
         }
       });
-      return emaArray;
+
+      createChart('BINANCE:BTCUSDT');
+
+      setInterval(checkEMACrossAlerts, 15 * 60 * 1000);
+
+      checkEMACrossAlerts();
     }
-
-    function detectCross(shortEMA, longEMA) {
-      const len = shortEMA.length;
-      if(len < 2) return null;
-
-      const prevDiff = shortEMA[len - 2] - longEMA[len - 2];
-      const currDiff = shortEMA[len - 1] - longEMA[len - 1];
-
-      if(prevDiff <= 0 && currDiff > 0) return 'cross_up';
-      if(prevDiff >= 0 && currDiff < 0) return 'cross_down';
-      return null;
-    }
-
-    let lastAlert = { '9_20': null };
-
-    async function checkEMACrossAlerts() {
-      const klines = await fetchKlines(currentMarket);
-      if(!klines) return;
-
-      const closePrices = klines.map(c => parseFloat(c[4]));
-
-      const ema9 = calculateEMA(closePrices, 9);
-      const ema20 = calculateEMA(closePrices, 20);
-      const ema200 = calculateEMA(closePrices, 200);
-
-      const cross9_20 = detectCross(ema9, ema20);
-
-      if(cross9_20 && lastAlert['9_20'] !== cross9_20) {
-        const marketAbove200 = ema9[ema9.length - 1] > ema200[ema200.length - 1] && ema20[ema20.length - 1] > ema200[ema200.length - 1];
-
-        let signalType = null;
-        if (marketAbove200 && cross9_20 === 'cross_up') {
-          signalType = 'BUY';
-        } else if (!marketAbove200 && cross9_20 === 'cross_down') {
-          signalType = 'SELL';
-        }
-
-        if(signalType) {
-          const msg = `${signalType} signal: EMA 9 and 20 ${cross9_20 === 'cross_up' ? 'crossed UP' : 'crossed DOWN'} on ${currentMarket} BTCUSDT (Market is ${marketAbove200 ? 'above' : 'below'} EMA 200)`;
-          logAlert(msg);
-          sendTelegramAlert(msg);
-          lastAlert['9_20'] = cross9_20;
-        } else {
-          lastAlert['9_20'] = null;
-        }
-      }
-    }
-
-    marketSelect.addEventListener('change', (e) => {
-      currentMarket = e.target.value;
-      if(currentMarket === 'spot') {
-        createChart('BINANCE:BTCUSDT');
-      } else {
-        createChart('BINANCE:BTCUSDT_PERP');
-      }
-    });
-
-    createChart('BINANCE:BTCUSDT');
-
-    setInterval(checkEMACrossAlerts, 15 * 60 * 1000);
-
-    checkEMACrossAlerts();
   </script>
 </body>
 </html>
